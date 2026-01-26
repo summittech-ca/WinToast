@@ -43,6 +43,10 @@
 #include <vector>
 #include <map>
 #include <memory>
+#include <chrono>
+#include <mutex>
+#include <string>
+#include <unordered_map>
 
 namespace WinToastLib {
 
@@ -138,6 +142,9 @@ namespace WinToastLib {
         void setDuration(_In_ Duration duration);
         void setExpiration(_In_ INT64 millisecondsFromNow);
         void setScenario(_In_ Scenario scenario);
+        void setLaunchArguments(std::wstring launchArgs);
+        void setGroup(std::wstring const& group);
+        void setTag(std::wstring const& tag);
         void addAction(_In_ std::wstring const& label);
         void addInput();
 
@@ -153,6 +160,9 @@ namespace WinToastLib {
         std::wstring const& audioPath() const;
         std::wstring const& attributionText() const;
         std::wstring const& scenario() const;
+        std::wstring const& launchArguments() const;
+        std::wstring const& group() const;
+        std::wstring const& tag() const;
         INT64 expiration() const;
         WinToastTemplateType type() const;
         WinToastTemplate::AudioOption audioOption() const;
@@ -173,6 +183,9 @@ namespace WinToastLib {
         std::wstring _audioPath{};
         std::wstring _attributionText{};
         std::wstring _scenario{L"Default"};
+        std::wstring _launchArgs{L"action=reply"};
+        std::wstring _group{};
+        std::wstring _tag{};
         INT64 _expiration{0};
         AudioOption _audioOption{WinToastTemplate::AudioOption::Default};
         WinToastTemplateType _type{WinToastTemplateType::Text01};
@@ -217,10 +230,10 @@ namespace WinToastLib {
         WinToast(void);
         virtual ~WinToast();
 
-        WinToast(const WinToast&) = delete;
-        WinToast& operator=(const WinToast&) = delete;
-        WinToast(WinToast&&) = delete;
-        WinToast& operator=(WinToast&&) = delete;
+        WinToast(WinToast const&)            = delete;
+        WinToast& operator=(WinToast const&) = delete;
+        WinToast(WinToast&&)                 = delete;
+        WinToast& operator=(WinToast&&)      = delete;
 
         static WinToast* instance();
         static bool isCompatible();
@@ -320,5 +333,6 @@ namespace WinToastLib {
         ComPtr<IToastNotifier> notifier(_In_ bool* succeded) const;
         void setError(_Out_opt_ WinToastError* error, _In_ WinToastError value);
     };
+
 } // namespace WinToastLib
 #endif // WINTOASTLIB_H

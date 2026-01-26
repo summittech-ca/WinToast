@@ -85,9 +85,9 @@ namespace DllImporter {
     static f_WindowsCreateStringReference WindowsCreateStringReference;
     static f_WindowsGetStringRawBuffer WindowsGetStringRawBuffer;
     static f_WindowsDeleteString WindowsDeleteString;
-    static HINSTANCE LibShell32  = nullptr;
-    static HINSTANCE LibPropSys  = nullptr;
-    static HINSTANCE LibComBase  = nullptr;
+    static HINSTANCE LibShell32 = nullptr;
+    static HINSTANCE LibPropSys = nullptr;
+    static HINSTANCE LibComBase = nullptr;
 
     template <class T>
     __inline _Check_return_ HRESULT _1_GetActivationFactory(_In_ HSTRING activatableClassId, _COM_Outptr_ T** factory) {
@@ -113,7 +113,7 @@ namespace DllImporter {
             loadFunctionFromLibrary(LibShell32, "SetCurrentProcessExplicitAppUserModelID", SetCurrentProcessExplicitAppUserModelID);
         if (SUCCEEDED(hr)) {
             LibPropSys = LoadLibraryW(L"PROPSYS.DLL");
-            hr                   = loadFunctionFromLibrary(LibPropSys, "PropVariantToString", PropVariantToString);
+            hr         = loadFunctionFromLibrary(LibPropSys, "PropVariantToString", PropVariantToString);
             if (SUCCEEDED(hr)) {
                 LibComBase = LoadLibraryW(L"COMBASE.DLL");
                 bool const succeded =
@@ -141,11 +141,11 @@ namespace DllImporter {
             LibShell32 = nullptr;
         }
         SetCurrentProcessExplicitAppUserModelID = nullptr;
-        PropVariantToString = nullptr;
-        RoGetActivationFactory = nullptr;
-        WindowsCreateStringReference = nullptr;
-        WindowsGetStringRawBuffer = nullptr;
-        WindowsDeleteString = nullptr;
+        PropVariantToString                     = nullptr;
+        RoGetActivationFactory                  = nullptr;
+        WindowsCreateStringReference            = nullptr;
+        WindowsGetStringRawBuffer               = nullptr;
+        WindowsDeleteString                     = nullptr;
     }
 } // namespace DllImporter
 
@@ -348,6 +348,24 @@ namespace Util {
                         if (SUCCEEDED(hr)) {
                             PCWSTR arguments = Util::AsString(argumentsHandle);
 
+                            if (arguments && *arguments) {
+                                std::wstring argsStr(arguments);
+                                auto pos = argsStr.find(L"btn=");
+                                if (pos != std::wstring::npos) {
+                                    // look for '&' after btn= or end of string
+                                    auto end = argsStr.find(L"&", pos + 4);
+                                    if (end == std::wstring::npos) {
+                                        end = argsStr.length();
+                                    }
+                                    auto idStr    = argsStr.substr(pos + 4, end - (pos + 4));
+                                    auto btnIndex = static_cast<long>(wcstol(idStr.c_str(), nullptr, 10));
+                                    eventHandler->toastActivated(btnIndex);
+                                    DllImporter::WindowsDeleteString(argumentsHandle);
+                                    markAsReadyForDeletionFunc();
+                                    return S_OK;
+                                }
+                            }
+
                             if (arguments && wcscmp(arguments, L"action=reply") == 0) {
                                 ComPtr<IToastActivatedEventArgs2> inputBoxActivatedEventArgs;
                                 HRESULT hr2 = inspectable->QueryInterface(inputBoxActivatedEventArgs.GetAddressOf());
@@ -387,13 +405,10 @@ namespace Util {
                                 }
                             }
 
-                            if (arguments && *arguments) {
-                                eventHandler->toastActivated(static_cast<long>(wcstol(arguments, nullptr, 10)));
-                                DllImporter::WindowsDeleteString(argumentsHandle);
-                                markAsReadyForDeletionFunc();
-                                return S_OK;
-                            }
+                            eventHandler->toastActivated(); // fallback to this
                             DllImporter::WindowsDeleteString(argumentsHandle);
+                            markAsReadyForDeletionFunc();
+                            return S_OK;
                         }
                     }
                     eventHandler->toastActivated();
@@ -756,6 +771,35 @@ HRESULT WinToast::createShellLinkHelper() {
     return hr;
 }
 
+static HRESULT addLaunchAttributeHelper(ABI::Windows::Data::Xml::Dom::IXmlDocument* doc, std::wstring const& launchArgs) {
+    if (launchArgs.empty()) {
+        return S_OK;
+    }
+
+    using namespace Microsoft::WRL;
+    using namespace ABI::Windows::Data::Xml::Dom;
+
+    ComPtr<IXmlNodeList> toastNodes;
+    HRESULT hr = doc->GetElementsByTagName(WinToastStringWrapper(L"toast").Get(), &toastNodes);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    ComPtr<IXmlNode> toastNode;
+    hr = toastNodes->Item(0, &toastNode);
+    if (FAILED(hr) || !toastNode) {
+        return FAILED(hr) ? hr : E_FAIL;
+    }
+
+    ComPtr<IXmlElement> toastEl;
+    hr = toastNode.As(&toastEl);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    return toastEl->SetAttribute(WinToastStringWrapper(L"launch").Get(), WinToastStringWrapper(launchArgs.c_str()).Get());
+}
+
 INT64 WinToast::showToast(_In_ WinToastTemplate const& toast, _In_ IWinToastHandler* eventHandler, _Out_ WinToastError* error) {
     std::shared_ptr<IWinToastHandler> handler(eventHandler);
     setError(error, WinToastError::NoError);
@@ -802,7 +846,13 @@ INT64 WinToast::showToast(_In_ WinToastTemplate const& toast, _In_ IWinToastHand
 
                         std::array<WCHAR, 12> buf;
                         for (std::size_t i = 0, actionsCount = toast.actionsCount(); i < actionsCount && SUCCEEDED(hr); i++) {
-                            _snwprintf_s(buf.data(), buf.size(), _TRUNCATE, L"%zd", i);
+                            //
+                            std::wstring args = toast.launchArguments();
+                            if (args.size()) {
+                                args.insert(0, L"&");
+                            }
+                            args.insert(0, std::to_wstring(i));
+                            args.insert(0, L"btn=");
                             hr = addActionHelper(xmlDocument.Get(), toast.actionLabel(i), buf.data());
                         }
 
@@ -825,6 +875,10 @@ INT64 WinToast::showToast(_In_ WinToastTemplate const& toast, _In_ IWinToastHand
                             hr = addScenarioHelper(xmlDocument.Get(), toast.scenario());
                         }
 
+                        if (SUCCEEDED(hr) && toast.launchArguments().length() > 0) {
+                            hr = addLaunchAttributeHelper(xmlDocument.Get(), toast.launchArguments());
+                        }
+
                     } else {
                         DEBUG_MSG("Modern features (Actions/Sounds/Attributes) not supported in this os version");
                     }
@@ -842,32 +896,46 @@ INT64 WinToast::showToast(_In_ WinToastTemplate const& toast, _In_ IWinToastHand
                             ComPtr<IToastNotification> notification;
                             hr = notificationFactory->CreateToastNotification(xmlDocument.Get(), &notification);
                             if (SUCCEEDED(hr)) {
-                                INT64 expiration = 0, relativeExpiration = toast.expiration();
-                                if (relativeExpiration > 0) {
-                                    InternalDateTime expirationDateTime(relativeExpiration);
-                                    expiration = expirationDateTime;
-                                    hr         = notification->put_ExpirationTime(&expirationDateTime);
-                                }
-
-                                EventRegistrationToken activatedToken, dismissedToken, failedToken;
-
-                                GUID guid;
-                                HRESULT hrGuid = CoCreateGuid(&guid);
-                                id             = guid.Data1;
-                                if (SUCCEEDED(hr) && SUCCEEDED(hrGuid)) {
-                                    hr = Util::setEventHandlers(notification.Get(), handler, expiration, activatedToken, dismissedToken,
-                                                                failedToken, [this, id]() { markAsReadyForDeletion(id); });
-                                    if (FAILED(hr)) {
-                                        setError(error, WinToastError::InvalidHandler);
+                                // Tag/Group are supported starting Windows 10 Anniversary Update (14393)
+                                if (WinToast::isWin10AnniversaryOrHigher()) {
+                                    Microsoft::WRL::ComPtr<ABI::Windows::UI::Notifications::IToastNotification2> toast2;
+                                    if (SUCCEEDED(notification.As(&toast2)) && toast2) {
+                                        if (!toast.tag().empty()) {
+                                            toast2->put_Tag(WinToastStringWrapper(toast.tag()).Get());
+                                        }
+                                        if (!toast.group().empty()) {
+                                            toast2->put_Group(WinToastStringWrapper(toast.group()).Get());
+                                        }
                                     }
                                 }
-
                                 if (SUCCEEDED(hr)) {
-                                    _buffer.emplace(id, NotifyData(notification, activatedToken, dismissedToken, failedToken));
-                                    DEBUG_MSG("xml: " << Util::AsString(xmlDocument));
-                                    hr = notifier->Show(notification.Get());
-                                    if (FAILED(hr)) {
-                                        setError(error, WinToastError::NotDisplayed);
+                                    INT64 expiration = 0, relativeExpiration = toast.expiration();
+                                    if (relativeExpiration > 0) {
+                                        InternalDateTime expirationDateTime(relativeExpiration);
+                                        expiration = expirationDateTime;
+                                        hr         = notification->put_ExpirationTime(&expirationDateTime);
+                                    }
+
+                                    EventRegistrationToken activatedToken, dismissedToken, failedToken;
+
+                                    GUID guid;
+                                    HRESULT hrGuid = CoCreateGuid(&guid);
+                                    id             = guid.Data1;
+                                    if (SUCCEEDED(hr) && SUCCEEDED(hrGuid)) {
+                                        hr = Util::setEventHandlers(notification.Get(), handler, expiration, activatedToken, dismissedToken,
+                                                                    failedToken, [this, id]() { markAsReadyForDeletion(id); });
+                                        if (FAILED(hr)) {
+                                            setError(error, WinToastError::InvalidHandler);
+                                        }
+                                    }
+
+                                    if (SUCCEEDED(hr)) {
+                                        _buffer.emplace(id, NotifyData(notification, activatedToken, dismissedToken, failedToken));
+                                        DEBUG_MSG("xml: " << Util::AsString(xmlDocument));
+                                        hr = notifier->Show(notification.Get());
+                                        if (FAILED(hr)) {
+                                            setError(error, WinToastError::NotDisplayed);
+                                        }
                                     }
                                 }
                             }
@@ -1418,6 +1486,18 @@ void WinToastLib::WinToastTemplate::setScenario(_In_ Scenario scenario) {
     }
 }
 
+void WinToastTemplate::setLaunchArguments(std::wstring launchArgs) {
+    _launchArgs = launchArgs;
+}
+
+void WinToastTemplate::setGroup(std::wstring const& group) {
+    _group = group;
+}
+
+void WinToastTemplate::setTag(std::wstring const& tag) {
+    _tag = tag;
+}
+
 void WinToastTemplate::setAttributionText(_In_ std::wstring const& attributionText) {
     _attributionText = attributionText;
 }
@@ -1479,6 +1559,18 @@ std::wstring const& WinToastTemplate::attributionText() const {
 
 std::wstring const& WinToastLib::WinToastTemplate::scenario() const {
     return _scenario;
+}
+
+std::wstring const& WinToastTemplate::launchArguments() const {
+    return _launchArgs;
+}
+
+std::wstring const& WinToastTemplate::group() const {
+    return _group;
+}
+
+std::wstring const& WinToastTemplate::tag() const {
+    return _tag;
 }
 
 INT64 WinToastTemplate::expiration() const {
